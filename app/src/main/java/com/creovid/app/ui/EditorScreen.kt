@@ -271,9 +271,9 @@ private fun CompareButton(vm: EditorViewModel) {
             .background(if (vm.comparing) CV.Surface2 else Color.Transparent)
             .pointerInput(Unit) {
                 detectTapGestures(onPress = {
-                    vm.setComparing(true)
+                    vm.holdOriginal(true)
                     tryAwaitRelease()
-                    vm.setComparing(false)
+                    vm.holdOriginal(false)
                 })
             }
             .padding(horizontal = 14.dp, vertical = 9.dp),

@@ -109,7 +109,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         refreshFrame(force = true)
     }
 
-    fun setComparing(value: Boolean) {
+    fun holdOriginal(value: Boolean) {
         comparing = value
         push()
         refreshFrame(force = true)
