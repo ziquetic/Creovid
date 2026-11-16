@@ -1,4 +1,3 @@
-
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -19,6 +18,7 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            // Debug keystore se sign: GitHub Actions se seedha install hone wala APK milta hai
             signingConfig = signingConfigs.getByName("debug")
         }
     }
@@ -27,7 +27,6 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-
     kotlinOptions {
         jvmTarget = "17"
     }
@@ -35,7 +34,6 @@ android {
     buildFeatures {
         compose = true
     }
-
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.14"
     }
@@ -52,7 +50,6 @@ android {
 
 dependencies {
     val media3 = "1.4.1"
-
     implementation("androidx.media3:media3-exoplayer:$media3")
     implementation("androidx.media3:media3-transformer:$media3")
     implementation("androidx.media3:media3-effect:$media3")
