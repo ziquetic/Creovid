@@ -6,6 +6,7 @@ import android.os.SystemClock
 import android.provider.OpenableColumns
 import androidx.annotation.OptIn
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -52,6 +53,16 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var comparing by mutableStateOf(false)
         private set
+    /** Timeline ki "eye" button: true ho to preview me grading band (original dikhta hai). */
+    var gradeHidden by mutableStateOf(false)
+        private set
+    var canUndo by mutableStateOf(false)
+        private set
+    var canRedo by mutableStateOf(false)
+        private set
+    /** Har successful LUT import par badhta hai (UI Filters panel kholne ke liye). */
+    var lutImportCount by mutableIntStateOf(0)
+        private set
     var exportProgress by mutableStateOf<Float?>(null)
         private set
     var exportedUri by mutableStateOf<Uri?>(null)
@@ -60,10 +71,35 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     /** Home screen ke Recent Projects (sabse naya sabse upar). */
     val projects = mutableStateListOf<Project>()
 
+    val currentTitle: String
+        get() = projects.firstOrNull { it.id == currentId }?.title ?: ""
+
+    val currentThumbPath: String?
+        get() = projects.firstOrNull { it.id == currentId }?.thumbPath
+
     private val store = ProjectStore(app)
     private val saveMutex = Mutex()
     private var currentId: String? = null
     private var currentLutPath: String? = null
+
+    // ---------- Undo / Redo ----------
+
+    private class Snapshot(
+        val params: GradeParams,
+        val presetName: String,
+        val lut: CubeLut?,
+        val lutName: String?,
+        val lutPath: String?,
+    ) {
+        fun sameAs(o: Snapshot): Boolean =
+            params == o.params && presetName == o.presetName &&
+                lut === o.lut && lutName == o.lutName && lutPath == o.lutPath
+    }
+
+    private val undoStack = ArrayDeque<Snapshot>()
+    private val redoStack = ArrayDeque<Snapshot>()
+    private var baseline = Snapshot(GradeParams(), "Original", null, null, null)
+    private var dirty = false
 
     private val offParams = GradeParams(lutIntensity = 0f)
     private var exportJob: Job? = null
@@ -97,9 +133,11 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         params = GradeParams()
         presetName = "Original"
         comparing = false
+        gradeHidden = false
         state.setLut(null)
         lutName = null
         push()
+        resetHistory()
 
         projects.add(
             0,
@@ -151,7 +189,9 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             params = p.params
             presetName = p.presetName
             comparing = false
+            gradeHidden = false
             push()
+            resetHistory()
             startPlayback(uri)
         }
     }
@@ -167,6 +207,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     /** Editor band karke home screen par wapas. Grading project me save ho jaati hai. */
     fun closeVideo() {
         if (exportJob?.isActive == true) return
+        commit()
         saveCurrent()
         _player?.let {
             it.stop()
@@ -175,6 +216,7 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         videoUri = null
         exportedUri = null
         currentId = null
+        gradeHidden = false
     }
 
     // ---------- Projects ----------
@@ -207,6 +249,14 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         persist()
     }
 
+    /** Editor ke upar wale naam box se. */
+    fun renameCurrent(title: String) {
+        val id = currentId ?: return
+        val t = title.trim().take(30)
+        if (t.isEmpty() || projects.firstOrNull { it.id == id }?.title == t) return
+        renameProject(id, t)
+    }
+
     fun deleteProject(id: String) {
         val p = projects.firstOrNull { it.id == id } ?: return
         projects.remove(p)
@@ -231,29 +281,104 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ---------- History ----------
+
+    private fun snapshot() = Snapshot(params, presetName, state.lut, lutName, currentLutPath)
+
+    private fun resetHistory() {
+        undoStack.clear()
+        redoStack.clear()
+        dirty = false
+        baseline = snapshot()
+        syncHistoryFlags()
+    }
+
+    private fun syncHistoryFlags() {
+        canUndo = undoStack.isNotEmpty()
+        canRedo = redoStack.isNotEmpty()
+    }
+
+    /** Pending badlav ko ek undo step bana deta hai (slider/wheel chhodne par bulao). */
+    fun commit() {
+        if (!dirty) return
+        dirty = false
+        val now = snapshot()
+        if (now.sameAs(baseline)) return
+        undoStack.addLast(baseline)
+        if (undoStack.size > 60) undoStack.removeFirst()
+        redoStack.clear()
+        baseline = now
+        syncHistoryFlags()
+    }
+
+    /** Slider/wheel chhodne par: undo step banao aur frame refresh karo. */
+    fun finishEdit() {
+        commit()
+        refreshFrame(force = true)
+    }
+
+    /** Preset/LUT/reset jaise ek-jhatke ke badlav: seedha ek alag undo step. */
+    private fun discrete(block: () -> Unit) {
+        commit()
+        block()
+        dirty = true
+        commit()
+    }
+
+    fun undo() {
+        commit()
+        val prev = undoStack.removeLastOrNull() ?: return
+        redoStack.addLast(baseline)
+        restore(prev)
+    }
+
+    fun redo() {
+        commit()
+        val next = redoStack.removeLastOrNull() ?: return
+        undoStack.addLast(baseline)
+        restore(next)
+    }
+
+    private fun restore(s: Snapshot) {
+        baseline = s
+        params = s.params
+        presetName = s.presetName
+        state.setLut(s.lut)
+        lutName = s.lutName
+        currentLutPath = s.lutPath
+        push()
+        syncHistoryFlags()
+        refreshFrame(force = true)
+    }
+
     // ---------- Grading ----------
 
     /** Slider/wheel se koi bhi value badalne ke liye. */
     fun update(block: (GradeParams) -> GradeParams) {
         params = block(params)
         presetName = ""
+        dirty = true
         push()
         refreshFrame()
     }
 
     fun applyPreset(p: Preset) {
-        params = p.params.copy(lutIntensity = params.lutIntensity)
-        presetName = p.name
+        discrete {
+            params = p.params.copy(lutIntensity = params.lutIntensity)
+            presetName = p.name
+        }
         push()
         refreshFrame(force = true)
     }
 
     fun resetAll() {
-        params = GradeParams()
-        presetName = "Original"
-        state.setLut(null)
-        lutName = null
-        currentLutPath = null
+        discrete {
+            params = GradeParams()
+            presetName = "Original"
+            state.setLut(null)
+            lutName = null
+            currentLutPath = null
+        }
         push()
         refreshFrame(force = true)
     }
@@ -264,8 +389,14 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         refreshFrame(force = true)
     }
 
+    fun toggleGradeHidden() {
+        gradeHidden = !gradeHidden
+        push()
+        refreshFrame(force = true)
+    }
+
     private fun push() {
-        state.params = if (comparing) offParams else params
+        state.params = if (comparing || gradeHidden) offParams else params
     }
 
     /** Pause me bhi naya grade dikhane ke liye current frame dobara draw karwata hai. */
@@ -292,13 +423,16 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
                     stream.use { CubeLut.parse(name, it) }
                 }
                 val saved = if (id != null) withContext(Dispatchers.IO) { store.copyLut(id, uri) } else null
-                state.setLut(lut)
-                lutName = name
-                currentLutPath = saved
-                params = params.copy(lutIntensity = 1f)
-                presetName = ""
+                discrete {
+                    state.setLut(lut)
+                    lutName = name
+                    currentLutPath = saved
+                    params = params.copy(lutIntensity = 1f)
+                    presetName = ""
+                }
                 push()
                 refreshFrame(force = true)
+                lutImportCount += 1
             } catch (e: Exception) {
                 message = "LUT load nahi hui: ${e.message}"
             }
@@ -306,9 +440,11 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun clearLut() {
-        state.setLut(null)
-        lutName = null
-        currentLutPath = null
+        discrete {
+            state.setLut(null)
+            lutName = null
+            currentLutPath = null
+        }
         refreshFrame(force = true)
     }
 
@@ -323,7 +459,11 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
         val src = videoUri ?: return
         if (exportJob?.isActive == true) return
         player.pause()
+        commit()
         saveCurrent()
+        // Export hamesha graded hota hai, isliye preview ki eye wapas on
+        gradeHidden = false
+        push()
         val projectId = currentId
         // Export ke dauraan slider chalane se output na badle, isliye copy bana lete hain
         val snapshot = GradeState().apply {

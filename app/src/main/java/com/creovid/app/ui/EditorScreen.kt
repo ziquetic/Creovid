@@ -1,15 +1,11 @@
 package com.creovid.app.ui
 
-import android.content.Intent
 import android.widget.Toast
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Image
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -21,46 +17,55 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.automirrored.rounded.Redo
+import androidx.compose.material.icons.automirrored.rounded.Undo
+import androidx.compose.material.icons.rounded.Compare
+import androidx.compose.material.icons.rounded.FileUpload
+import androidx.compose.material.icons.rounded.Fullscreen
+import androidx.compose.material.icons.rounded.FullscreenExit
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.SkipNext
+import androidx.compose.material.icons.rounded.SkipPrevious
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -68,14 +73,10 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.creovid.app.EditorViewModel
-import com.creovid.app.R
-import com.creovid.app.engine.ExportQuality
-import com.creovid.app.engine.GradeParams
-import com.creovid.app.engine.Preset
-import com.creovid.app.engine.Presets
 import kotlinx.coroutines.delay
 
 @Composable
@@ -83,9 +84,10 @@ fun EditorScreen(vm: EditorViewModel, onPickLut: () -> Unit) {
     val context = LocalContext.current
     val view = LocalView.current
     val owner = LocalLifecycleOwner.current
+    val focus = LocalFocusManager.current
     val player = vm.player
 
-    // Message toast
+    // Toast messages
     LaunchedEffect(vm.message) {
         vm.message?.let {
             Toast.makeText(context, it, Toast.LENGTH_LONG).show()
@@ -93,7 +95,7 @@ fun EditorScreen(vm: EditorViewModel, onPickLut: () -> Unit) {
         }
     }
 
-    // Background me jaane par video pause
+    // Background me jaane par video pause + grading save
     DisposableEffect(owner) {
         val obs = LifecycleEventObserver { _, e ->
             if (e == Lifecycle.Event.ON_PAUSE) {
@@ -112,165 +114,447 @@ fun EditorScreen(vm: EditorViewModel, onPickLut: () -> Unit) {
         onDispose { view.keepScreenOn = false }
     }
 
-    var pos by remember { mutableFloatStateOf(0f) }
-    var dur by remember { mutableLongStateOf(0L) }
-    var playing by remember { mutableStateOf(true) }
-    var scrubbing by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
+    // Player ki position (timeline + clock isi se chalte hain)
+    val ph = remember { PlayheadState() }
+    LaunchedEffect(player) {
         while (true) {
-            if (!scrubbing) {
-                dur = player.duration.coerceAtLeast(0L)
-                pos = if (dur > 0) player.currentPosition.toFloat() / dur else 0f
+            if (!ph.scrubbing) {
+                val d = player.duration.coerceAtLeast(0L)
+                ph.durMs = d
+                ph.posMs = if (d > 0L) player.currentPosition.coerceIn(0L, d) else 0L
             }
-            playing = player.isPlaying
-            delay(150)
+            ph.playing = player.isPlaying
+            delay(40)
         }
     }
 
-    var tab by remember { mutableIntStateOf(0) }
+    var tool by remember { mutableStateOf<EditTool?>(null) }
+    var fullscreen by remember { mutableStateOf(false) }
     var showExport by remember { mutableStateOf(false) }
+    var name by remember(vm.currentTitle) { mutableStateOf(vm.currentTitle) }
+    var resumeAfterScrub by remember { mutableStateOf(false) }
 
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(CV.Bg)
-            .statusBarsPadding()
-            .navigationBarsPadding(),
-    ) {
-        // ---------- Top bar ----------
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = { vm.closeVideo() }) {
-                Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back", tint = CV.Text)
+    // LUT import hone ke baad Filters panel khol do (wahan LUT strength milti hai)
+    var lutSeen by remember { mutableIntStateOf(vm.lutImportCount) }
+    LaunchedEffect(vm.lutImportCount) {
+        if (vm.lutImportCount != lutSeen) {
+            lutSeen = vm.lutImportCount
+            tool = EditTool.Filters
+        }
+    }
+
+    BackHandler {
+        when {
+            fullscreen -> fullscreen = false
+            tool != null -> tool = null
+            else -> {
+                vm.renameCurrent(name)
+                vm.closeVideo()
             }
-            Image(painterResource(R.drawable.creovid_mark), null, Modifier.size(24.dp))
-            Text(
-                "  Creovid",
-                color = CV.Text,
-                fontWeight = FontWeight.Bold,
-                fontSize = 17.sp,
-                modifier = Modifier.weight(1f),
-            )
-            CompareButton(vm)
-            Spacer(Modifier.width(8.dp))
-            GradientButton("Export") { showExport = true }
-            Spacer(Modifier.width(6.dp))
         }
+    }
 
-        // ---------- Preview ----------
-        Box(
-            Modifier.fillMaxWidth().weight(1f).background(Color.Black),
-            contentAlignment = Alignment.Center,
+    fun seekTo(ms: Long) {
+        ph.posMs = ms
+        player.seekTo(ms)
+    }
+
+    val gradeLabel = buildString {
+        append("Grade - ")
+        append(if (vm.presetName.isNotEmpty()) vm.presetName else "Custom")
+        if (vm.lutName != null) append(" + LUT")
+    }
+
+    Box(Modifier.fillMaxSize().background(CV.Bg)) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding(),
         ) {
-            AndroidView(
-                factory = { ctx ->
-                    PlayerView(ctx).apply {
-                        useController = false
-                        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                        setShutterBackgroundColor(android.graphics.Color.BLACK)
-                        this.player = vm.player
-                    }
-                },
-                modifier = Modifier
-                    .fillMaxSize()
-                    .pointerInput(Unit) {
-                        detectTapGestures(onTap = {
-                            if (player.isPlaying) player.pause() else player.play()
-                        })
+            if (!fullscreen) {
+                TopBar(
+                    vm = vm,
+                    name = name,
+                    onNameChange = { name = it.take(30) },
+                    onNameDone = { focus.clearFocus() },
+                    onBack = {
+                        vm.renameCurrent(name)
+                        vm.closeVideo()
                     },
-            )
-        }
-
-        // ---------- Transport ----------
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = { if (player.isPlaying) player.pause() else player.play() }) {
-                Icon(
-                    if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                    contentDescription = "Play/Pause",
-                    tint = CV.Text,
+                    onExport = { showExport = true },
                 )
             }
-            Slider(
-                value = pos,
-                onValueChange = {
-                    scrubbing = true
-                    pos = it
-                    if (dur > 0) player.seekTo((it * dur).toLong())
-                },
-                onValueChangeFinished = { scrubbing = false },
-                colors = SliderDefaults.colors(
-                    thumbColor = Color.White,
-                    activeTrackColor = CV.Sky,
-                    inactiveTrackColor = CV.Outline,
-                ),
-                modifier = Modifier.weight(1f).height(28.dp),
+
+            PreviewArea(
+                vm = vm,
+                ph = ph,
+                player = player,
+                fullscreen = fullscreen,
+                onExitFullscreen = { fullscreen = false },
+                onSeek = { seekTo(it) },
+                modifier = Modifier.weight(1f),
             )
+
+            if (!fullscreen) {
+                TransportRow(
+                    vm = vm,
+                    ph = ph,
+                    player = player,
+                    onFullscreen = { fullscreen = true },
+                )
+
+                Timeline(
+                    ph = ph,
+                    thumbPath = vm.currentThumbPath,
+                    gradeLabel = gradeLabel,
+                    gradeHidden = vm.gradeHidden,
+                    onToggleGrade = { vm.toggleGradeHidden() },
+                    onSeek = { seekTo(it) },
+                    onScrubStart = {
+                        resumeAfterScrub = player.isPlaying
+                        player.pause()
+                        ph.scrubbing = true
+                    },
+                    onScrubEnd = {
+                        ph.scrubbing = false
+                        if (resumeAfterScrub) player.play()
+                    },
+                )
+
+                val t = tool
+                if (t != null) {
+                    ToolPanel(
+                        tool = t,
+                        vm = vm,
+                        onPickLut = onPickLut,
+                        onClose = { tool = null },
+                        modifier = Modifier.height(250.dp),
+                    )
+                }
+
+                BottomToolBar(
+                    selected = tool,
+                    lutActive = vm.lutName != null,
+                    onTool = { picked ->
+                        if (picked == EditTool.Lut) {
+                            onPickLut()
+                        } else {
+                            tool = if (tool == picked) null else picked
+                        }
+                    },
+                )
+            }
         }
 
-        // ---------- Tabs ----------
-        val tabs = listOf("Looks", "Basic", "Wheels", "FX")
-        Row(Modifier.fillMaxWidth().padding(top = 4.dp)) {
-            tabs.forEachIndexed { i, name ->
-                Column(
-                    Modifier.weight(1f).clickable { tab = i }.padding(vertical = 8.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Text(
-                        name,
-                        color = if (tab == i) CV.Text else CV.TextDim,
-                        fontWeight = if (tab == i) FontWeight.Bold else FontWeight.Normal,
-                        fontSize = 14.sp,
-                    )
-                    Spacer(Modifier.height(5.dp))
-                    Box(
-                        Modifier
-                            .height(3.dp)
-                            .width(34.dp)
-                            .clip(RoundedCornerShape(50))
-                            .background(if (tab == i) CV.GradientH else Brush.horizontalGradient(listOf(Color.Transparent, Color.Transparent))),
+        val progress = vm.exportProgress
+        if (progress != null) {
+            ExportOverlay(progress = progress, onCancel = { vm.cancelExport() })
+        }
+    }
+
+    if (showExport && vm.exportProgress == null) {
+        ExportQualityDialog(
+            onDismiss = { showExport = false },
+            onStart = { q ->
+                showExport = false
+                vm.export(q)
+            },
+        )
+    }
+
+    val done = vm.exportedUri
+    if (done != null && vm.exportProgress == null) {
+        ExportDoneDialog(uri = done, onClose = { vm.exportedUri = null })
+    }
+}
+
+// =====================================================================
+// Top bar: back, project name, settings, export
+// =====================================================================
+
+@Composable
+private fun TopBar(
+    vm: EditorViewModel,
+    name: String,
+    onNameChange: (String) -> Unit,
+    onNameDone: () -> Unit,
+    onBack: () -> Unit,
+    onExport: () -> Unit,
+) {
+    var menu by remember { mutableStateOf(false) }
+    val pill = RoundedCornerShape(50)
+
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconButton(onClick = onBack) {
+            Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back", tint = CV.Text)
+        }
+
+        BasicTextField(
+            value = name,
+            onValueChange = onNameChange,
+            singleLine = true,
+            textStyle = TextStyle(
+                color = CV.Text,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.Center,
+            ),
+            cursorBrush = SolidColor(CV.Sky),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = { onNameDone() }),
+            modifier = Modifier
+                .weight(1f)
+                .height(36.dp)
+                .clip(pill)
+                .background(CV.Surface2)
+                .border(1.dp, CV.Outline, pill)
+                .onFocusChanged {
+                    if (!it.hasFocus) {
+                        if (name.isBlank()) onNameChange(vm.currentTitle) else vm.renameCurrent(name)
+                    }
+                }
+                .padding(horizontal = 14.dp),
+            decorationBox = { inner ->
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { inner() }
+            },
+        )
+
+        Box {
+            IconButton(onClick = { menu = true }) {
+                Icon(Icons.Rounded.Settings, contentDescription = "Settings", tint = CV.Text)
+            }
+            DropdownMenu(
+                expanded = menu,
+                onDismissRequest = { menu = false },
+                modifier = Modifier.background(CV.Surface2),
+            ) {
+                DropdownMenuItem(
+                    text = { Text("Reset all grading", color = CV.Text) },
+                    onClick = {
+                        menu = false
+                        vm.resetAll()
+                    },
+                )
+                if (vm.lutName != null) {
+                    DropdownMenuItem(
+                        text = { Text("Remove LUT", color = CV.Text) },
+                        onClick = {
+                            menu = false
+                            vm.clearLut()
+                        },
                     )
                 }
             }
         }
 
-        // ---------- Controls ----------
-        Column(
+        Box(
             Modifier
-                .fillMaxWidth()
-                .weight(1.25f)
-                .background(CV.Surface)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 14.dp, vertical = 10.dp),
+                .padding(end = 6.dp)
+                .size(38.dp)
+                .clip(CircleShape)
+                .background(CV.GradientH)
+                .clickable(onClick = onExport),
+            contentAlignment = Alignment.Center,
         ) {
-            when (tab) {
-                0 -> LooksTab(vm, onPickLut)
-                1 -> BasicTab(vm)
-                2 -> WheelsTab(vm)
-                else -> FxTab(vm)
-            }
-            Spacer(Modifier.height(16.dp))
+            Icon(Icons.Rounded.FileUpload, contentDescription = "Export", tint = Color.White, modifier = Modifier.size(22.dp))
         }
     }
-
-    ExportDialogs(vm, showExport) { showExport = false }
 }
 
 // =====================================================================
-// Compare button: dabaye rakho to original dikhta hai
+// Preview
 // =====================================================================
 
 @Composable
+private fun PreviewArea(
+    vm: EditorViewModel,
+    ph: PlayheadState,
+    player: ExoPlayer,
+    fullscreen: Boolean,
+    onExitFullscreen: () -> Unit,
+    onSeek: (Long) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier.fillMaxWidth().background(Color.Black),
+        contentAlignment = Alignment.Center,
+    ) {
+        AndroidView(
+            factory = { ctx ->
+                PlayerView(ctx).apply {
+                    useController = false
+                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                    setShutterBackgroundColor(android.graphics.Color.BLACK)
+                    this.player = vm.player
+                }
+            },
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    detectTapGestures(onTap = {
+                        if (player.isPlaying) player.pause() else player.play()
+                    })
+                },
+        )
+
+        ClockChip(ph, Modifier.align(Alignment.BottomStart).padding(start = 8.dp, bottom = if (fullscreen) 64.dp else 8.dp))
+
+        if (vm.comparing || vm.gradeHidden) {
+            Box(
+                Modifier
+                    .align(Alignment.TopStart)
+                    .padding(8.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(Color.Black.copy(alpha = 0.6f))
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+            ) {
+                Text("ORIGINAL", color = CV.Sky, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+
+        if (fullscreen) {
+            FullscreenControls(ph, player, onExitFullscreen, onSeek, Modifier.align(Alignment.BottomCenter))
+        }
+    }
+}
+
+@Composable
+private fun ClockChip(ph: PlayheadState, modifier: Modifier = Modifier) {
+    val now by remember(ph) { derivedStateOf { clockText(ph.posMs) } }
+    val total by remember(ph) { derivedStateOf { clockText(ph.durMs) } }
+    Box(
+        modifier
+            .clip(RoundedCornerShape(50))
+            .background(Color.Black.copy(alpha = 0.6f))
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+    ) {
+        Text("$now / $total", color = Color.White, fontSize = 11.sp)
+    }
+}
+
+@Composable
+private fun FullscreenControls(
+    ph: PlayheadState,
+    player: ExoPlayer,
+    onExit: () -> Unit,
+    onSeek: (Long) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier
+            .fillMaxWidth()
+            .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.7f))))
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        BarIcon(if (ph.playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, "Play or pause") {
+            if (player.isPlaying) player.pause() else player.play()
+        }
+        val dur = ph.durMs
+        Slider(
+            value = if (dur > 0L) (ph.posMs.toFloat() / dur).coerceIn(0f, 1f) else 0f,
+            onValueChange = {
+                ph.scrubbing = true
+                if (dur > 0L) onSeek((it * dur).toLong())
+            },
+            onValueChangeFinished = { ph.scrubbing = false },
+            colors = SliderDefaults.colors(
+                thumbColor = Color.White,
+                activeTrackColor = CV.Sky,
+                inactiveTrackColor = CV.Outline,
+            ),
+            modifier = Modifier.weight(1f).height(28.dp),
+        )
+        BarIcon(Icons.Rounded.FullscreenExit, "Exit full preview", onClick = onExit)
+    }
+}
+
+// =====================================================================
+// Transport row: undo/redo, prev/play/next, compare, fullscreen
+// =====================================================================
+
+@Composable
+private fun BarIcon(
+    icon: ImageVector,
+    description: String,
+    enabled: Boolean = true,
+    tint: Color = CV.Text,
+    onClick: () -> Unit,
+) {
+    IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(40.dp)) {
+        Icon(
+            icon,
+            contentDescription = description,
+            tint = if (enabled) tint else CV.Outline,
+            modifier = Modifier.size(22.dp),
+        )
+    }
+}
+
+@Composable
+private fun TransportRow(
+    vm: EditorViewModel,
+    ph: PlayheadState,
+    player: ExoPlayer,
+    onFullscreen: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().background(CV.Surface).padding(horizontal = 4.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        BarIcon(Icons.AutoMirrored.Rounded.Undo, "Undo", enabled = vm.canUndo) { vm.undo() }
+        BarIcon(Icons.AutoMirrored.Rounded.Redo, "Redo", enabled = vm.canRedo) { vm.redo() }
+
+        Spacer(Modifier.weight(1f))
+
+        BarIcon(Icons.Rounded.SkipPrevious, "Go to start") {
+            player.seekTo(0L)
+            ph.posMs = 0L
+        }
+        Box(
+            Modifier
+                .padding(horizontal = 6.dp)
+                .size(42.dp)
+                .clip(CircleShape)
+                .background(CV.GradientH)
+                .clickable { if (player.isPlaying) player.pause() else player.play() },
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                if (ph.playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                contentDescription = "Play or pause",
+                tint = Color.White,
+                modifier = Modifier.size(26.dp),
+            )
+        }
+        BarIcon(Icons.Rounded.SkipNext, "Go to end") {
+            val d = player.duration.coerceAtLeast(0L)
+            if (d > 0L) {
+                player.pause()
+                val end = (d - 40L).coerceAtLeast(0L)
+                player.seekTo(end)
+                ph.posMs = end
+            }
+        }
+
+        Spacer(Modifier.weight(1f))
+
+        CompareButton(vm)
+        BarIcon(Icons.Rounded.Fullscreen, "Full preview", onClick = onFullscreen)
+    }
+}
+
+/** Dabaye rakho to original (bina grading) dikhta hai. */
+@Composable
 private fun CompareButton(vm: EditorViewModel) {
-    val shape = RoundedCornerShape(50)
     Box(
         Modifier
-            .clip(shape)
-            .border(1.dp, if (vm.comparing) CV.Sky else CV.Outline, shape)
+            .size(40.dp)
+            .clip(CircleShape)
             .background(if (vm.comparing) CV.Surface2 else Color.Transparent)
             .pointerInput(Unit) {
                 detectTapGestures(onPress = {
@@ -278,248 +562,14 @@ private fun CompareButton(vm: EditorViewModel) {
                     tryAwaitRelease()
                     vm.holdOriginal(false)
                 })
-            }
-            .padding(horizontal = 14.dp, vertical = 9.dp),
+            },
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            if (vm.comparing) "Original" else "Dabake dekho",
-            color = if (vm.comparing) CV.Sky else CV.TextDim,
-            fontSize = 12.sp,
-        )
-    }
-}
-
-// =====================================================================
-// Tabs
-// =====================================================================
-
-@Composable
-private fun ParamSlider(
-    vm: EditorViewModel,
-    label: String,
-    value: Float,
-    range: ClosedFloatingPointRange<Float>,
-    default: Float = 0f,
-    set: (GradeParams, Float) -> GradeParams,
-) {
-    GradeSlider(
-        label = label,
-        value = value,
-        range = range,
-        onChange = { v -> vm.update { set(it, v) } },
-        onFinished = { vm.refreshFrame(force = true) },
-        default = default,
-    )
-}
-
-@Composable
-private fun LooksTab(vm: EditorViewModel, onPickLut: () -> Unit) {
-    Text("Cinematic looks", color = CV.TextDim, fontSize = 12.sp)
-    Spacer(Modifier.height(8.dp))
-    LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        items(Presets.all) { p ->
-            PresetCard(p, selected = vm.presetName == p.name) { vm.applyPreset(p) }
-        }
-    }
-    Spacer(Modifier.height(18.dp))
-    Text("Apni LUT (.cube)", color = CV.TextDim, fontSize = 12.sp)
-    Spacer(Modifier.height(8.dp))
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        OutlineButton("LUT import karo") { onPickLut() }
-        val name = vm.lutName
-        if (name != null) {
-            Spacer(Modifier.width(10.dp))
-            Text(name, color = CV.Sky, fontSize = 12.sp, maxLines = 1, modifier = Modifier.weight(1f))
-            TextButton(onClick = { vm.clearLut() }) { Text("Hatao", color = CV.TextDim) }
-        }
-    }
-    if (vm.lutName != null) {
-        Spacer(Modifier.height(8.dp))
-        ParamSlider(vm, "LUT strength", vm.params.lutIntensity, 0f..1f, default = 1f) { s, v ->
-            s.copy(lutIntensity = v)
-        }
-    }
-    Spacer(Modifier.height(14.dp))
-    OutlineButton("Sab reset karo") { vm.resetAll() }
-}
-
-@Composable
-private fun PresetCard(p: Preset, selected: Boolean, onClick: () -> Unit) {
-    val shape = RoundedCornerShape(12.dp)
-    Column(
-        Modifier.width(84.dp).clickable(onClick = onClick),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(58.dp)
-                .clip(shape)
-                .background(Brush.linearGradient(listOf(Color(p.swatchA), Color(p.swatchB))))
-                .then(if (selected) Modifier.border(BorderStroke(2.dp, CV.Gradient), shape) else Modifier),
-        )
-        Spacer(Modifier.height(5.dp))
-        Text(
-            p.name,
-            color = if (selected) CV.Text else CV.TextDim,
-            fontSize = 11.sp,
-            textAlign = TextAlign.Center,
-            maxLines = 2,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-        )
-    }
-}
-
-@Composable
-private fun BasicTab(vm: EditorViewModel) {
-    val p = vm.params
-    ParamSlider(vm, "Exposure", p.exposure, -2f..2f) { s, v -> s.copy(exposure = v) }
-    ParamSlider(vm, "Contrast", p.contrast, -1f..1f) { s, v -> s.copy(contrast = v) }
-    ParamSlider(vm, "Highlights", p.highlights, -1f..1f) { s, v -> s.copy(highlights = v) }
-    ParamSlider(vm, "Shadows", p.shadows, -1f..1f) { s, v -> s.copy(shadows = v) }
-    ParamSlider(vm, "Temperature (thanda - garam)", p.temperature, -1f..1f) { s, v -> s.copy(temperature = v) }
-    ParamSlider(vm, "Tint (hara - magenta)", p.tint, -1f..1f) { s, v -> s.copy(tint = v) }
-    ParamSlider(vm, "Saturation", p.saturation, -1f..1f) { s, v -> s.copy(saturation = v) }
-    ParamSlider(vm, "Vibrance", p.vibrance, -1f..1f) { s, v -> s.copy(vibrance = v) }
-    ParamSlider(vm, "Fade (matte)", p.fade, 0f..1f) { s, v -> s.copy(fade = v) }
-    ParamSlider(vm, "Film curve", p.filmCurve, 0f..1f) { s, v -> s.copy(filmCurve = v) }
-    Text("Tip: label par double-tap karo to value reset ho jaati hai.", color = CV.TextDim, fontSize = 11.sp)
-}
-
-@Composable
-private fun WheelsTab(vm: EditorViewModel) {
-    val p = vm.params
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        ColorWheel(
-            "Shadows", p.lift,
-            onChange = { w -> vm.update { it.copy(lift = w) } },
-            onFinished = { vm.refreshFrame(force = true) },
-            modifier = Modifier.weight(1f),
-        )
-        ColorWheel(
-            "Midtones", p.gamma,
-            onChange = { w -> vm.update { it.copy(gamma = w) } },
-            onFinished = { vm.refreshFrame(force = true) },
-            modifier = Modifier.weight(1f),
-        )
-        ColorWheel(
-            "Highlights", p.gain,
-            onChange = { w -> vm.update { it.copy(gain = w) } },
-            onFinished = { vm.refreshFrame(force = true) },
-            modifier = Modifier.weight(1f),
-        )
-    }
-    Spacer(Modifier.height(8.dp))
-    Text(
-        "Wheel ke kinare ki taraf drag karo = zyada colour. Cinematic look ke liye shadows me teal/blue, highlights me orange try karo. Double-tap = reset.",
-        color = CV.TextDim,
-        fontSize = 11.sp,
-    )
-}
-
-@Composable
-private fun FxTab(vm: EditorViewModel) {
-    val p = vm.params
-    ParamSlider(vm, "Film grain", p.grain, 0f..1f) { s, v -> s.copy(grain = v) }
-    ParamSlider(vm, "Bloom (glow)", p.bloom, 0f..1f) { s, v -> s.copy(bloom = v) }
-    ParamSlider(vm, "Halation (laal glow)", p.halation, 0f..1f) { s, v -> s.copy(halation = v) }
-    ParamSlider(vm, "Vignette", p.vignette, 0f..1f) { s, v -> s.copy(vignette = v) }
-    Spacer(Modifier.height(10.dp))
-    Text("Letterbox (cinema bars)", color = CV.Text, fontSize = 13.sp)
-    Spacer(Modifier.height(8.dp))
-    val options = listOf("Off" to 0f, "2.39:1" to 2.39f, "2:1" to 2.0f, "1.85:1" to 1.85f)
-    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        options.forEach { (label, value) ->
-            ChoiceChip(label, selected = p.letterbox == value) {
-                vm.update { it.copy(letterbox = value) }
-                vm.refreshFrame(force = true)
-            }
-        }
-    }
-}
-
-// =====================================================================
-// Export dialogs
-// =====================================================================
-
-@Composable
-private fun ExportDialogs(vm: EditorViewModel, show: Boolean, dismiss: () -> Unit) {
-    val context = LocalContext.current
-    var quality by remember { mutableStateOf(ExportQuality.P1080) }
-    val progress = vm.exportProgress
-    val done = vm.exportedUri
-
-    if (show && progress == null) {
-        AlertDialog(
-            onDismissRequest = dismiss,
-            containerColor = CV.Surface2,
-            title = { Text("Export", color = CV.Text) },
-            text = {
-                Column {
-                    Text("Quality chuno. Video Movies/Creovid folder me save hogi, bina watermark ke.", color = CV.TextDim, fontSize = 13.sp)
-                    Spacer(Modifier.height(14.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        ExportQuality.values().forEach { q ->
-                            ChoiceChip(q.label, selected = quality == q) { quality = q }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                GradientButton("Export shuru") {
-                    dismiss()
-                    vm.export(quality)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = dismiss) { Text("Cancel", color = CV.TextDim) }
-            },
-        )
-    }
-
-    if (progress != null) {
-        AlertDialog(
-            onDismissRequest = {},
-            containerColor = CV.Surface2,
-            title = { Text("Export ho raha hai...", color = CV.Text) },
-            text = {
-                Column {
-                    LinearProgressIndicator(
-                        progress = { progress.coerceIn(0f, 1f) },
-                        modifier = Modifier.fillMaxWidth(),
-                        color = CV.Violet,
-                        trackColor = CV.Outline,
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    Text("${(progress * 100).toInt()}%  -  app khula rakho, screen on rahegi.", color = CV.TextDim, fontSize = 13.sp)
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { vm.cancelExport() }) { Text("Cancel", color = CV.Lilac) }
-            },
-        )
-    }
-
-    if (progress == null && done != null) {
-        AlertDialog(
-            onDismissRequest = { vm.exportedUri = null },
-            containerColor = CV.Surface2,
-            title = { Text("Video ready!", color = CV.Text) },
-            text = { Text("Gallery ke Movies/Creovid folder me save ho gayi.", color = CV.TextDim, fontSize = 13.sp) },
-            confirmButton = {
-                GradientButton("Share") {
-                    val send = Intent(Intent.ACTION_SEND).apply {
-                        type = "video/mp4"
-                        putExtra(Intent.EXTRA_STREAM, done)
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    }
-                    context.startActivity(Intent.createChooser(send, "Share karo"))
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { vm.exportedUri = null }) { Text("Band karo", color = CV.TextDim) }
-            },
+        Icon(
+            Icons.Rounded.Compare,
+            contentDescription = "Hold to see original",
+            tint = if (vm.comparing) CV.Sky else CV.Text,
+            modifier = Modifier.size(22.dp),
         )
     }
 }
