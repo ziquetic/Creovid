@@ -3,6 +3,7 @@ package com.creovid.app.ui
 import android.graphics.BitmapFactory
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -293,6 +294,7 @@ private fun Header() {
 // Hero banner (pager)
 // =====================================================================
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun HeroPager(onStart: () -> Unit) {
     val pager = rememberPagerState(pageCount = { slides.size })
