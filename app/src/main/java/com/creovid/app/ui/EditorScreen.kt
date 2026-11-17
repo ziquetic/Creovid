@@ -96,7 +96,10 @@ fun EditorScreen(vm: EditorViewModel, onPickLut: () -> Unit) {
     // Background me jaane par video pause
     DisposableEffect(owner) {
         val obs = LifecycleEventObserver { _, e ->
-            if (e == Lifecycle.Event.ON_PAUSE) player.pause()
+            if (e == Lifecycle.Event.ON_PAUSE) {
+                player.pause()
+                vm.saveCurrent()
+            }
         }
         owner.lifecycle.addObserver(obs)
         onDispose { owner.lifecycle.removeObserver(obs) }
